@@ -1,0 +1,89 @@
+name: Build Retro HTML APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'retro-apk/**'
+      - 'overlander-retro-apk-project*.zip'
+permissions:
+  contents: read
+concurrency:
+  group: retro-apk-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare project from directory or ZIP
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path, PurePosixPath
+          import zipfile
+          project = Path('retro-apk')
+          archives = sorted(Path('.').glob('overlander-retro-apk-project*.zip'))
+          if archives:
+              if len(archives) != 1:
+                  raise SystemExit('Keep exactly one overlander-retro-apk-project ZIP in the repository root.')
+              with zipfile.ZipFile(archives[0]) as z:
+                  entries = [i for i in z.infolist() if i.filename.startswith('retro-apk/') and not i.is_dir()]
+                  if not entries or sum(i.file_size for i in entries) > 100 * 1024 * 1024:
+                      raise SystemExit('Invalid or oversized project ZIP.')
+                  for item in entries:
+                      path = PurePosixPath(item.filename)
+                      if path.is_absolute() or '..' in path.parts or '\\' in item.filename:
+                          raise SystemExit('Unsafe archive path.')
+                      target = Path(*path.parts)
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      target.write_bytes(z.read(item))
+          required = ['settings.gradle', 'build.gradle', 'app/build.gradle',
+                      'app/src/main/AndroidManifest.xml', 'app/src/main/assets/index.html']
+          missing = [p for p in required if not (project / p).is_file()]
+          if missing:
+              raise SystemExit('Retro project missing. Upload the generated project ZIP to the repository root. Missing: ' + ', '.join(missing))
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Validate HTML JavaScript and XML
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess, tempfile, xml.etree.ElementTree as ET
+          html = Path('retro-apk/app/src/main/assets/index.html').read_text(encoding='utf-8')
+          assert html.rstrip().endswith('</html>'), 'Incomplete HTML'
+          assert not re.search(r'<script[^>]+src=', html, re.I), 'Remote scripts are not allowed'
+          for script in re.findall(r'<script>(.*?)</script>', html, re.S):
+              with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8') as f:
+                  f.write(script)
+                  f.flush()
+                  subprocess.run(['node', '--check', f.name], check=True)
+          for p in Path('retro-apk/app/src/main').rglob('*.xml'):
+              ET.parse(p)
+          PY
+      - name: Build debug APK
+        run: gradle -p retro-apk :app:assembleDebug --no-daemon --stacktrace
+      - name: Verify APK and signature
+        run: |
+          APK=retro-apk/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+          cp "$APK" overlander-retro-debug.apk
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: overlander-retro-debug-apk
+          path: overlander-retro-debug.apk
+          if-no-files-found: error
+          retention-days: 14
