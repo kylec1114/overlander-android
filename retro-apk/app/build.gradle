@@ -1,0 +1,8 @@
+plugins { id 'com.android.application' }
+android {
+ namespace 'hk.overlander.retro'
+ compileSdk 35
+ defaultConfig { applicationId 'hk.overlander.retro'; minSdk 26; targetSdk 34; versionCode 401; versionName '0.4.1-retro' }
+ compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+dependencies { implementation 'androidx.webkit:webkit:1.12.1' }
