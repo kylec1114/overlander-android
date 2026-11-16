@@ -12,7 +12,8 @@ Optional notification permission, approximate one-off reminders. Completing/dele
 No calendar reading/import, background playback, focus timer, full animated scene, actual drag/stamp animation, real journey map, categories/deadlines, photo copying, JSON backup/export or persistent music selection. Start-a-journey is currently a simple task dialog. Journal ordering follows reverse task insertion, not completion time. Photo access depends on the original document provider. Uninstall removes task data. This is an early test prototype, not a finished product.
 
 ## Build
-JDK 17, Gradle 8.9, Android SDK platform 35. Android Gradle Plugin 8.7.3. No Gradle wrapper binary included. Run installed Gradle: `gradle --no-daemon :app:assembleDebug`.
+JDK 17, Gradle 8.9, Android SDK platform 35, Android Gradle Plugin 8.7.3. The repository includes wrapper launcher files but does not bundle the wrapper JAR; CI installs Gradle 8.9 explicitly. Locally, run `gradle wrapper --gradle-version 8.9` once to generate the full wrapper, then use `./gradlew :app:assembleDebug`.
+
 GitHub Actions runs on pushes to main and manual dispatch. It may consume account quota. Successful builds upload `overlander-debug-apk` for 7 days. Open Actions, select the run, inspect logs, download artifact and extract the APK. Debug signing is for testing, not production distribution. Upload of source does not guarantee Actions is allowed by account policy or that compilation succeeds.
 
 ## Test checklist
