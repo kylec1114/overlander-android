@@ -1,717 +1,88 @@
 package hk.overlander.journal;
 
-import android.app.Activity;
-import android.app.AlertDialog;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
-import android.content.ActivityNotFoundException;
-import android.content.Intent;
-import android.content.SharedPreferences;
+import android.app.*;
+import android.content.*;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
+import android.database.Cursor;
+import android.graphics.*;
 import android.graphics.drawable.GradientDrawable;
-import android.media.MediaPlayer;
 import android.net.Uri;
-import android.os.Build;
-import android.os.Bundle;
+import android.os.*;
 import android.provider.CalendarContract;
-import android.view.View;
-import android.view.ViewGroup;
-import android.widget.Button;
-import android.widget.EditText;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.SeekBar;
-import android.widget.TextView;
-import android.widget.Toast;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
-
+import android.view.*;
+import android.widget.*;
+import org.json.*;
+import java.io.*;
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
-  private static final int REQUEST_PHOTO = 8;
-  private static final int REQUEST_MUSIC = 9;
-  private static final int REQUEST_NOTIFICATIONS = 12;
-
-  private LinearLayout page;
-  private LinearLayout body;
-  private JSONArray tasks = new JSONArray();
-  private SharedPreferences prefs;
-  private String tab = "車票";
-  private String scene = "黃昏";
-  private String photoId;
-  private MediaPlayer music;
-
-  private final int ink = Color.rgb(48, 54, 50);
-  private final int green = Color.rgb(64, 92, 74);
-  private final int cream = Color.rgb(245, 239, 223);
-
-  private int dp(float value) {
-    return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+  private final ExecutorService io=Executors.newSingleThreadExecutor();
+  private android.content.SharedPreferences prefs;
+  private JSONArray tasks=new JSONArray();
+  private LinearLayout page,body;
+  private String tab="車票",scene="黃昏",photoId;
+  private boolean healthy=true,busy=false;
+  private final int cream=0xfff5efdf,green=0xff405c4a;
+  private int dp(float v){return (int)(v*getResources().getDisplayMetrics().density+.5f);}
+  private String date(long t){return new SimpleDateFormat("yyyy-MM-dd",Locale.TRADITIONAL_CHINESE).format(new Date(t));}
+  private void toast(String s){Toast.makeText(this,s,Toast.LENGTH_LONG).show();}
+  private TextView text(String s,int size){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(0xff303632);t.setPadding(dp(8),dp(8),dp(8),dp(8));return t;}
+  private Button button(String s,Runnable r){Button b=new Button(this);b.setText(s);b.setAllCaps(false);b.setOnClickListener(v->r.run());return b;}
+  private LinearLayout column(){LinearLayout l=new LinearLayout(this);l.setOrientation(1);return l;}
+  @Override public void onCreate(Bundle state){super.onCreate(state);prefs=getSharedPreferences("journey",0);try{tasks=new JSONArray(prefs.getString("tasks","[]"));}catch(Exception e){healthy=false;toast("原有資料未能讀取；已停止寫入，請勿清除 App 資料");}scene=prefs.getString("scene","黃昏");if(state!=null){photoId=state.getString("photoId");tab=state.getString("tab","車票");}render();}
+  @Override protected void onSaveInstanceState(Bundle b){super.onSaveInstanceState(b);b.putString("photoId",photoId);b.putString("tab",tab);}
+  private boolean save(){if(!healthy){toast("原有資料損壞，未有覆寫");return false;}boolean ok=prefs.edit().putString("tasks",tasks.toString()).commit();if(!ok)toast("儲存失敗，請檢查空間");return ok;}
+  private JSONObject find(String id){for(int i=0;i<tasks.length();i++){JSONObject o=tasks.optJSONObject(i);if(o!=null&&id.equals(o.optString("id")))return o;}return null;}
+  private void render(){
+    page=column();page.setBackgroundColor(cream);setContentView(page);page.setOnApplyWindowInsetsListener((v,in)->{v.setPadding(dp(12),in.getSystemWindowInsetTop(),dp(12),in.getSystemWindowInsetBottom());return in;});page.requestApplyInsets();
+    page.addView(text("THE OVERLANDER / 漫遊日誌 · v0.2.0",18));page.addView(new WindowView(),new LinearLayout.LayoutParams(-1,dp(115)));
+    LinearLayout nav=new LinearLayout(this);for(String s:new String[]{"車票","日誌","收藏","聲音"})nav.addView(button(s,()->{tab=s;render();}),new LinearLayout.LayoutParams(0,dp(48),1));page.addView(nav);
+    if(tab.equals("車票")){TextView drop=text("長按車票拖到呢度驗票 · 亦可按完成",14);drop.setBackgroundColor(0xffd6e0ce);drop.setOnDragListener((v,e)->{switch(e.getAction()){case DragEvent.ACTION_DRAG_STARTED:return e.getLocalState() instanceof String;case DragEvent.ACTION_DROP:JSONObject o=find((String)e.getLocalState());if(o!=null&&!o.optBoolean("done"))complete(o);return true;default:return true;}});page.addView(drop);}
+    ScrollView scroll=new ScrollView(this);body=column();scroll.addView(body);page.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+    if(tab.equals("車票")){body.addView(button("＋ 開一張車票",()->edit(null,false)));body.addView(button("記低已經做過嘅事",()->edit(null,true)));body.addView(button("今日收車 / 今日票夾",this::wallet));body.addView(button("手機日曆 / 匯入時刻表",this::calendar));for(int i=0;i<tasks.length();i++){JSONObject o=tasks.optJSONObject(i);if(o!=null&&!o.optBoolean("done"))card(o,body);}}
+    else if(tab.equals("日誌")){for(JSONObject o:completed())card(o,body);if(completed().isEmpty())body.addView(text("第一個足印，由一件小事開始。",18));}
+    else if(tab.equals("收藏")){body.addView(text("旅程地圖 · 虛構路線，非真實到訪紀錄",16));body.addView(new MapView(),new LinearLayout.LayoutParams(-1,dp(260)));body.addView(text("每一程一站；點選站點回顧。冇連勝，冇扣分。",14));body.addView(button("匯出 JSON 備份（包含可讀取相片）",()->pick(31,Intent.ACTION_CREATE_DOCUMENT,"application/json")));body.addView(button("匯入 JSON 備份",()->pick(32,Intent.ACTION_OPEN_DOCUMENT,"application/json")));}
+    else sounds();page.addView(text("本機儲存 · 無帳戶 · 無跨裝置同步",11));
   }
-
-  @Override
-  protected void onCreate(Bundle savedInstanceState) {
-    super.onCreate(savedInstanceState);
-    prefs = getSharedPreferences("journey", MODE_PRIVATE);
-
-    try {
-      tasks = new JSONArray(prefs.getString("tasks", "[]"));
-    } catch (Exception error) {
-      toast("紀錄未能載入；請勿清除應用程式資料");
-    }
-
-    scene = prefs.getString("scene", "黃昏");
-    getWindow().setStatusBarColor(green);
-    getWindow().setNavigationBarColor(green);
-    render();
-
-    String today = formatDate(System.currentTimeMillis());
-    if (!today.equals(prefs.getString("boarding", ""))) {
-      new AlertDialog.Builder(this)
-          .setTitle("今日乘車證 · " + today)
-          .setItems(new String[]{"輕鬆慢行", "專心一程", "休息充電"}, (dialog, which) -> {
-            prefs.edit().putString("boarding", today).apply();
-            toast("今日，由一小步開始。");
-          })
-          .setNegativeButton("直接上車", (dialog, which) -> prefs.edit().putString("boarding", today).apply())
-          .show();
-    }
+  private ArrayList<JSONObject> completed(){ArrayList<JSONObject> list=new ArrayList<>();for(int i=0;i<tasks.length();i++){JSONObject o=tasks.optJSONObject(i);if(o!=null&&o.optBoolean("done"))list.add(o);}list.sort((a,b)->Long.compare(b.optLong("completed"),a.optLong("completed")));return list;}
+  private void edit(JSONObject existing,boolean done){
+    LinearLayout f=column();EditText title=new EditText(this),note=new EditText(this),category=new EditText(this),when=new EditText(this),start=new EditText(this),end=new EditText(this);
+    title.setHint("目的地 / 任務名稱");note.setHint("票背留一句");category.setHint("分類（可留空）");when.setHint("日期 yyyy-MM-dd（可留空）");start.setHint("開始 HH:mm（可留空）");end.setHint("截止 HH:mm（可留空）");
+    if(existing!=null){title.setText(existing.optString("title"));note.setText(existing.optString("note"));category.setText(existing.optString("category"));when.setText(existing.optString("date"));start.setText(existing.optString("start"));end.setText(existing.optString("end"));}
+    for(EditText e:new EditText[]{title,note,category,when,start,end})f.addView(e);ScrollView sc=new ScrollView(this);sc.addView(f);
+    AlertDialog d=new AlertDialog.Builder(this).setTitle("寫一張車票").setView(sc).setNegativeButton("取消",null).setPositiveButton("收好",null).create();d.setOnShowListener(x->d.getButton(-1).setOnClickListener(v->{try{String t=title.getText().toString().trim(),day=when.getText().toString().trim(),a=start.getText().toString().trim(),b=end.getText().toString().trim();if(t.isEmpty())throw new Exception("請寫低目的地");if(!day.isEmpty()){SimpleDateFormat fmt=new SimpleDateFormat("yyyy-MM-dd",Locale.US);fmt.setLenient(false);if(!day.matches("\d{4}-\d{2}-\d{2}")||!fmt.format(fmt.parse(day)).equals(day))throw new Exception("日期格式錯誤");}for(String time:new String[]{a,b})if(!time.isEmpty()&&!time.matches("([01]\d|2[0-3]):[0-5]\d"))throw new Exception("時間格式應為 HH:mm");if(!a.isEmpty()&&!b.isEmpty()&&a.compareTo(b)>0)throw new Exception("截止時間不可早於開始時間");
+      JSONObject o=existing==null?new JSONObject():new JSONObject(existing.toString());o.put("title",t).put("note",note.getText().toString()).put("category",category.getText().toString()).put("date",day).put("start",a).put("end",b);if(existing==null){o.put("id",UUID.randomUUID().toString()).put("done",done);if(done)o.put("completed",System.currentTimeMillis());tasks.put(o);}else for(int i=0;i<tasks.length();i++)if(tasks.optJSONObject(i)==existing)tasks.put(i,o);if(save()){d.dismiss();render();}
+    }catch(Exception e){toast(e.getMessage()==null?"未能儲存":e.getMessage());}}));d.show();
   }
-
-  private String formatDate(long time) {
-    return new SimpleDateFormat("yyyy-MM-dd", Locale.TRADITIONAL_CHINESE).format(new Date(time));
+  private void card(JSONObject o,LinearLayout target){
+    LinearLayout c=column();c.setPadding(dp(12),dp(6),dp(12),dp(6));GradientDrawable bg=new GradientDrawable();bg.setColor(0xfffffaeb);bg.setCornerRadius(dp(12));bg.setStroke(dp(1),0xffd8c6a8);c.setBackground(bg);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(0,dp(8),0,dp(8));target.addView(c,lp);
+    c.addView(text(o.optBoolean("done")?"票尾 · 已到站 "+date(o.optLong("completed")):"自由車票 · 長按拖曳驗票",13));c.addView(text(o.optString("title"),22));c.addView(text(o.optString("category")+"  "+o.optString("date")+"  "+o.optString("start")+" — "+o.optString("end"),12));if(!o.optString("note").isEmpty())c.addView(text(o.optString("note"),15));
+    if(!o.optString("photo").isEmpty()){ImageView im=new ImageView(this);try{android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=4;try(InputStream in=getContentResolver().openInputStream(Uri.parse(o.optString("photo")))){im.setImageBitmap(BitmapFactory.decodeStream(in,null,opts));}im.setAdjustViewBounds(true);im.setMaxHeight(dp(180));c.addView(im);}catch(Exception e){c.addView(text("相片無法讀取，可重新選擇",12));}}
+    c.setOnLongClickListener(v->{if(o.optBoolean("done"))return false;ClipData data=ClipData.newPlainText("ticket",o.optString("id"));if(Build.VERSION.SDK_INT>=24)return v.startDragAndDrop(data,new View.DragShadowBuilder(v),o.optString("id"),0);return v.startDrag(data,new View.DragShadowBuilder(v),o.optString("id"),0);});
+    c.addView(button(o.optBoolean("done")?"復原完成":"驗票 · 完成",()->{if(!o.optBoolean("done"))complete(o);else try{o.put("done",false);save();render();}catch(Exception e){toast("未能儲存");}}));c.addView(button("票背 / 更多",()->menu(o)));
   }
-
-  private void toast(String message) {
-    Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
-  }
-
-  private void saveTasks() {
-    prefs.edit().putString("tasks", tasks.toString()).apply();
-  }
-
-  private TextView text(String value, int size) {
-    TextView view = new TextView(this);
-    view.setText(value);
-    view.setTextSize(size);
-    view.setTextColor(ink);
-    view.setPadding(dp(5), dp(6), dp(5), dp(6));
-    return view;
-  }
-
-  private Button button(String label, View.OnClickListener listener) {
-    Button view = new Button(this);
-    view.setText(label);
-    view.setAllCaps(false);
-    view.setTextColor(green);
-    view.setOnClickListener(listener);
-    return view;
-  }
-
-  private void render() {
-    page = new LinearLayout(this);
-    page.setOrientation(LinearLayout.VERTICAL);
-    page.setBackgroundColor(cream);
-    page.setPadding(dp(14), 0, dp(14), 0);
-    setContentView(page);
-
-    page.setOnApplyWindowInsetsListener((view, insets) -> {
-      view.setPadding(dp(14), insets.getSystemWindowInsetTop(), dp(14), insets.getSystemWindowInsetBottom());
-      return insets;
-    });
-    page.requestApplyInsets();
-
-    page.addView(text("THE OVERLANDER / 漫遊日誌", 19));
-
-    View scenery = new SceneryView();
-    page.addView(scenery, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(145)));
-
-    page.addView(text("把做過的事，變成走過的路。", 14));
-
-    LinearLayout navigation = new LinearLayout(this);
-    for (String item : new String[]{"車票", "日誌", "收藏", "聲音"}) {
-      navigation.addView(button(item, v -> {
-        tab = item;
-        render();
-      }), new LinearLayout.LayoutParams(0, dp(48), 1f));
-    }
-    page.addView(navigation);
-
-    ScrollView scroll = new ScrollView(this);
-    body = new LinearLayout(this);
-    body.setOrientation(LinearLayout.VERTICAL);
-    scroll.addView(body);
-    page.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-
-    if (tab.equals("車票")) {
-      showTickets();
-    } else if (tab.equals("日誌")) {
-      showJournal();
-    } else if (tab.equals("收藏")) {
-      showCollection();
-    } else {
-      showSound();
-    }
-
-    page.addView(text("本機儲存 · 測試版 · 尚未提供備份", 11));
-  }
-
-  private void showTickets() {
-    body.addView(button("＋ 開一張車票", v -> editTicket(null, false)));
-    body.addView(button("記低已經做過嘅事", v -> editTicket(null, true)));
-
-    int pendingCount = 0;
-    for (int index = 0; index < tasks.length(); index++) {
-      JSONObject task = tasks.optJSONObject(index);
-      if (task != null && !task.optBoolean("done")) {
-        showTicket(task);
-        pendingCount++;
-      }
-    }
-
-    if (pendingCount == 0) {
-      body.addView(text("車票仲未寫好，下一站由你決定。", 18));
-    }
-
-    body.addView(button("今日收車", v -> {
-      int completedToday = 0;
-      String today = formatDate(System.currentTimeMillis());
-      for (int index = 0; index < tasks.length(); index++) {
-        JSONObject task = tasks.optJSONObject(index);
-        if (task.optBoolean("done") && today.equals(formatDate(task.optLong("completed")))) {
-          completedToday++;
-        }
-      }
-
-      new AlertDialog.Builder(this)
-          .setTitle("收好今日")
-          .setMessage("今日留下 " + completedToday + " 張票尾。\n未行完嘅路，可以下次再行。")
-          .setPositiveButton("翻開日誌", (dialog, which) -> {
-            tab = "日誌";
-            render();
-          })
-          .setNegativeButton("留喺車廂", null)
-          .show();
-    }));
-  }
-
-  private void editTicket(JSONObject existing, boolean alreadyCompleted) {
-    LinearLayout form = new LinearLayout(this);
-    form.setOrientation(LinearLayout.VERTICAL);
-    form.setPadding(dp(20), 0, dp(20), 0);
-
-    EditText titleInput = new EditText(this);
-    titleInput.setHint("目的地 / 任務名稱");
-
-    EditText noteInput = new EditText(this);
-    noteInput.setHint("票背留一句（可留空）");
-
-    if (existing != null) {
-      titleInput.setText(existing.optString("title"));
-      noteInput.setText(existing.optString("note"));
-    }
-
-    form.addView(titleInput);
-    form.addView(noteInput);
-
-    AlertDialog dialog = new AlertDialog.Builder(this)
-        .setTitle("寫一張車票")
-        .setView(form)
-        .setPositiveButton("收好", null)
-        .setNegativeButton("取消", null)
-        .create();
-
-    dialog.setOnShowListener(listener -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-      String title = titleInput.getText().toString().trim();
-      if (title.isEmpty()) {
-        titleInput.setError("請寫低目的地");
-        return;
-      }
-
-      try {
-        JSONObject task = existing == null ? new JSONObject() : existing;
-        task.put("title", title);
-        task.put("note", noteInput.getText().toString());
-
-        if (existing == null) {
-          task.put("id", UUID.randomUUID().toString());
-          task.put("done", alreadyCompleted);
-          if (alreadyCompleted) {
-            task.put("completed", System.currentTimeMillis());
-          }
-          tasks.put(task);
-        }
-
-        saveTasks();
-        dialog.dismiss();
-        render();
-      } catch (Exception error) {
-        toast("未能儲存，請重試");
-      }
-    }));
-
-    dialog.show();
-  }
-
-  private void showTicket(JSONObject task) {
-    boolean completed = task.optBoolean("done");
-
-    LinearLayout card = new LinearLayout(this);
-    card.setOrientation(LinearLayout.VERTICAL);
-    card.setPadding(dp(13), dp(9), dp(13), dp(9));
-
-    GradientDrawable background = new GradientDrawable();
-    background.setColor(Color.rgb(255, 250, 235));
-    background.setCornerRadius(dp(12));
-    background.setStroke(dp(1), Color.rgb(216, 198, 168));
-    card.setBackground(background);
-
-    LinearLayout.LayoutParams cardLayout = new LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-    cardLayout.setMargins(0, dp(8), 0, dp(8));
-    body.addView(card, cardLayout);
-
-    card.addView(text(completed ? "已到站 · " + formatDate(task.optLong("completed")) : "自由車票 · 不限班次", 12));
-
-    TextView title = text(task.optString("title"), 22);
-    title.setTypeface(null, 1);
-    card.addView(title);
-
-    String note = task.optString("note");
-    if (!note.isEmpty()) {
-      card.addView(text(note, 15));
-    }
-
-    String photo = task.optString("photo");
-    if (!photo.isEmpty()) {
-      try {
-        ImageView imageView = new ImageView(this);
-        imageView.setImageURI(Uri.parse(photo));
-        imageView.setAdjustViewBounds(true);
-        imageView.setMaxHeight(dp(180));
-        card.addView(imageView);
-      } catch (Exception error) {
-        card.addView(text("相片暫時無法開啟", 12));
-      }
-    }
-
-    LinearLayout actions = new LinearLayout(this);
-    actions.addView(button(completed ? "復原完成" : "驗票 · 完成", v -> {
-      try {
-        task.put("done", !completed);
-        if (!completed) {
-          task.put("completed", System.currentTimeMillis());
-          cancelReminder(task);
-          toast("已蓋日期印：呢一程，你行過喇。");
-        }
-        saveTasks();
-        render();
-      } catch (Exception error) {
-        toast("未能儲存");
-      }
-    }));
-
-    actions.addView(button("票背 / 更多", v -> showTaskMenu(task)));
-    card.addView(actions);
-  }
-
-  private void showTaskMenu(JSONObject task) {
-    new AlertDialog.Builder(this)
-        .setTitle(task.optString("title"))
-        .setItems(new String[]{
-            "修改 / 留一句",
-            "開始呢一程",
-            "加相片",
-            "提醒我",
-            "取消提醒",
-            "加入手機日曆",
-            "刪除車票"
-        }, (dialog, which) -> {
-          if (which == 0) {
-            editTicket(task, false);
-          } else if (which == 1) {
-            new AlertDialog.Builder(this)
-                .setTitle("本程目的地")
-                .setMessage(task.optString("title") + "\n\n慢慢行，唔需要倒數。")
-                .setPositiveButton("繼續旅程", null)
-                .show();
-          } else if (which == 2) {
-            photoId = task.optString("id");
-            Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            picker.setType("image/*");
-            picker.addCategory(Intent.CATEGORY_OPENABLE);
-            picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-            try {
-              startActivityForResult(picker, REQUEST_PHOTO);
-            } catch (ActivityNotFoundException error) {
-              toast("未找到相片選擇工具");
-            }
-          } else if (which == 3) {
-            requestReminder(task);
-          } else if (which == 4) {
-            cancelReminder(task);
-            toast("已取消提醒");
-          } else if (which == 5) {
-            try {
-              Intent calendar = new Intent(Intent.ACTION_INSERT)
-                  .setData(CalendarContract.Events.CONTENT_URI)
-                  .putExtra(CalendarContract.Events.TITLE, task.optString("title"))
-                  .putExtra(CalendarContract.Events.DESCRIPTION, task.optString("note"));
-              startActivity(calendar);
-            } catch (ActivityNotFoundException error) {
-              toast("未找到可新增行程嘅日曆 App");
-            }
-          } else if (which == 6) {
-            new AlertDialog.Builder(this)
-                .setMessage("刪除呢張車票？")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("刪除", (confirmDialog, whichButton) -> {
-                  cancelReminder(task);
-                  for (int index = tasks.length() - 1; index >= 0; index--) {
-                    if (tasks.optJSONObject(index).optString("id").equals(task.optString("id"))) {
-                      tasks.remove(index);
-                    }
-                  }
-                  saveTasks();
-                  render();
-                })
-                .show();
-          }
-        })
-        .show();
-  }
-
-  private Intent reminderIntent(JSONObject task) {
-    Intent intent = new Intent(this, ReminderReceiver.class);
-    intent.setData(Uri.parse("overlander://reminder/" + task.optString("id")));
-    intent.putExtra("id", task.optString("id"));
-    return intent;
-  }
-
-  private void cancelReminder(JSONObject task) {
-    PendingIntent pendingIntent = PendingIntent.getBroadcast(
-        this, 0, reminderIntent(task), PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE);
-
-    if (pendingIntent != null) {
-      ((android.app.AlarmManager) getSystemService(ALARM_SERVICE)).cancel(pendingIntent);
-      pendingIntent.cancel();
-    }
-
-    ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).cancel(task.optString("id").hashCode());
-  }
-
-  private void requestReminder(JSONObject task) {
-    if (task.optBoolean("done")) {
-      toast("已完成嘅車票唔需要提醒");
-      return;
-    }
-
-    if (Build.VERSION.SDK_INT >= 33
-        && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
-      requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQUEST_NOTIFICATIONS);
-      toast("授權後請再選擇提醒時間");
-      return;
-    }
-
-    new AlertDialog.Builder(this)
-        .setTitle("幾時提醒？（約略時間）")
-        .setItems(new String[]{"15 分鐘後", "1 小時後", "明日呢個時間"}, (dialog, which) -> {
-          long delay = new long[]{900000L, 3600000L, 86400000L}[which];
-          PendingIntent pendingIntent = PendingIntent.getBroadcast(
-              this, 0, reminderIntent(task), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
-          try {
-            ((android.app.AlarmManager) getSystemService(ALARM_SERVICE))
-                .setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + delay, pendingIntent);
-            toast("已安排約略提醒；重啟手機後需重新設定");
-          } catch (Exception error) {
-            toast("提醒未能安排");
-          }
-        })
-        .show();
-  }
-
-  private void showJournal() {
-    int completedCount = 0;
-    for (int index = tasks.length() - 1; index >= 0; index--) {
-      JSONObject task = tasks.optJSONObject(index);
-      if (task != null && task.optBoolean("done")) {
-        showTicket(task);
-        completedCount++;
-      }
-    }
-
-    if (completedCount == 0) {
-      body.addView(text("第一個足印，會由一件小事開始。", 18));
-    }
-  }
-
-  private void showCollection() {
-    int completedCount = 0;
-    for (int index = 0; index < tasks.length(); index++) {
-      if (tasks.optJSONObject(index).optBoolean("done")) {
-        completedCount++;
-      }
-    }
-
-    body.addView(text("旅程收藏 · 已完成 " + completedCount + " 程", 22));
-    body.addView(text("虛構旅程站點，唔代表真實到訪紀錄。", 12));
-
-    String[] stations = {"山間小站", "海邊月台", "雨中小鎮", "森林支線", "夜行終點"};
-    for (int index = 0; index < stations.length; index++) {
-      int required = (index + 1) * 3;
-      body.addView(text((completedCount >= required ? "已收藏：" : "未到達：") + stations[index] + " · " + required + " 程", 19));
-    }
-
-    body.addView(text("冇連勝，冇扣分；復原完成會同步更新。", 13));
-  }
-
-  private void showSound() {
-    body.addView(text("窗邊收音機", 24));
-    body.addView(text("原創程序合成車輪聲 · 非實地錄音", 13));
-    body.addView(button("播放 / 暫停火車聲", v -> startRailSound()));
-
-    SeekBar volume = new SeekBar(this);
-    volume.setProgress(35);
-    volume.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-      @Override
-      public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-        if (railSound != null) {
-          railSound.setVolume(progress / 100f, progress / 100f);
-        }
-      }
-
-      @Override
-      public void onStartTrackingTouch(SeekBar seekBar) {
-      }
-
-      @Override
-      public void onStopTrackingTouch(SeekBar seekBar) {
-      }
-    });
-    body.addView(volume);
-
-    body.addView(button("選擇自己嘅音樂", v -> {
-      try {
-        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        picker.setType("audio/*");
-        picker.addCategory(Intent.CATEGORY_OPENABLE);
-        startActivityForResult(picker, REQUEST_MUSIC);
-      } catch (ActivityNotFoundException error) {
-        toast("未找到音樂選擇工具");
-      }
-    }));
-
-    body.addView(button("播放 / 暫停音樂", v -> {
-      if (music == null) {
-        toast("請先選擇音樂");
-        return;
-      }
-
-      if (music.isPlaying()) {
-        music.pause();
-      } else {
-        music.start();
-      }
-    }));
-
-    body.addView(text("離開 App 會暫停聲音；本版未有背景播放。", 12));
-
-    for (String option : new String[]{"晨光", "黃昏", "夜行"}) {
-      body.addView(button(option + "窗景", v -> {
-        scene = option;
-        prefs.edit().putString("scene", option).apply();
-        render();
-      }));
-    }
-  }
-
-  private android.media.AudioTrack railSound;
-
-  private void startRailSound() {
-    try {
-      if (railSound == null) {
-        int sampleRate = 22050;
-        int length = sampleRate * 6;
-        short[] samples = new short[length];
-        java.util.Random random = new java.util.Random(41);
-        double low = 0;
-
-        for (int index = 0; index < length; index++) {
-          double time = index / (double) sampleRate;
-          double noise = random.nextDouble() * 2 - 1;
-          low = 0.96 * low + 0.04 * noise;
-
-          double cycle = time % 0.75;
-          double envelope = Math.exp(-cycle * 34)
-              + (cycle >= 0.16 ? 0.65 * Math.exp(-(cycle - 0.16) * 34) : 0);
-
-          double value = 0.18 * low
-              + 0.22 * envelope * Math.sin(2 * Math.PI * 92 * time)
-              + 0.025 * noise;
-
-          double edge = Math.min(1, Math.min(time / 0.03, (6 - time) / 0.03));
-          samples[index] = (short) (Math.tanh(value) * 20000 * edge);
-        }
-
-        railSound = new android.media.AudioTrack.Builder()
-            .setAudioAttributes(new android.media.AudioAttributes.Builder()
-                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build())
-            .setAudioFormat(new android.media.AudioFormat.Builder()
-                .setSampleRate(sampleRate)
-                .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
-                .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
-                .build())
-            .setBufferSizeInBytes(length * 2)
-            .setTransferMode(android.media.AudioTrack.MODE_STATIC)
-            .build();
-
-        railSound.write(samples, 0, length);
-      }
-
-      if (railSound.getPlayState() == android.media.AudioTrack.PLAYSTATE_PLAYING) {
-        railSound.pause();
-      } else {
-        railSound.play();
-      }
-    } catch (Exception error) {
-      toast("火車聲未能播放");
-      if (railSound != null) {
-        railSound.release();
-        railSound = null;
-      }
-    }
-  }
-
-  @Override
-  protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-    super.onActivityResult(requestCode, resultCode, data);
-
-    if (resultCode != RESULT_OK || data == null || data.getData() == null) {
-      return;
-    }
-
-    Uri uri = data.getData();
-
-    try {
-      getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-    } catch (Exception ignored) {
-    }
-
-    if (requestCode == REQUEST_PHOTO) {
-      try {
-        for (int index = 0; index < tasks.length(); index++) {
-          JSONObject task = tasks.optJSONObject(index);
-          if (task.optString("id").equals(photoId)) {
-            task.put("photo", uri.toString());
-          }
-        }
-        saveTasks();
-        render();
-      } catch (Exception error) {
-        toast("相片未能加入");
-      }
-    } else if (requestCode == REQUEST_MUSIC) {
-      try {
-        if (music != null) {
-          music.release();
-          music = null;
-        }
-
-        music = MediaPlayer.create(this, uri);
-        if (music == null) {
-          throw new IllegalStateException("MediaPlayer could not open the selected audio file");
-        }
-
-        music.setLooping(true);
-        music.start();
-      } catch (Exception error) {
-        toast("未能播放呢個檔案");
-      }
-    }
-  }
-
-  @Override
-  protected void onPause() {
-    super.onPause();
-
-    if (railSound != null) {
-      railSound.pause();
-    }
-
-    if (music != null && music.isPlaying()) {
-      music.pause();
-    }
-  }
-
-  @Override
-  protected void onDestroy() {
-    if (railSound != null) {
-      railSound.release();
-    }
-
-    if (music != null) {
-      music.release();
-    }
-
-    super.onDestroy();
-  }
-
-  private class SceneryView extends View {
-    private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-
-    SceneryView() {
-      super(MainActivity.this);
-    }
-
-    private void drawRectangle(android.graphics.Canvas canvas, int color, float left, float top, float right, float bottom) {
-      paint.setColor(color);
-      canvas.drawRect(left, top, right, bottom, paint);
-    }
-
-    @Override
-    protected void onDraw(android.graphics.Canvas canvas) {
-      float width = getWidth();
-      float height = getHeight();
-      boolean night = scene.equals("夜行");
-
-      drawRectangle(canvas, Color.rgb(121, 87, 68), 0, 0, width, height);
-      drawRectangle(canvas,
-          night ? Color.rgb(24, 43, 69)
-              : scene.equals("晨光") ? Color.rgb(195, 224, 220)
-              : Color.rgb(233, 186, 133),
-          dp(8), dp(8), width - dp(8), height - dp(22));
-
-      paint.setColor(Color.rgb(255, 237, 183));
-      canvas.drawCircle(width * 0.77f, height * 0.26f, dp(17), paint);
-
-      android.graphics.Path hills = new android.graphics.Path();
-      hills.moveTo(dp(8), height * 0.78f);
-      hills.lineTo(width * 0.22f, height * 0.35f);
-      hills.lineTo(width * 0.42f, height * 0.70f);
-      hills.lineTo(width * 0.65f, height * 0.40f);
-      hills.lineTo(width - dp(8), height * 0.78f);
-      hills.lineTo(width - dp(8), height - dp(22));
-      hills.lineTo(dp(8), height - dp(22));
-      hills.close();
-
-      paint.setColor(night ? Color.rgb(38, 61, 66) : Color.rgb(100, 131, 107));
-      canvas.drawPath(hills, paint);
-
-      drawRectangle(canvas, Color.rgb(66, 93, 73), dp(8), height * 0.80f, width - dp(8), height - dp(22));
-
-      paint.setColor(cream);
-      paint.setTextSize(dp(12));
-      canvas.drawText(scene + "慢車 / THE OVERLANDER", dp(14), height - dp(6), paint);
-    }
-  }
+  private void complete(JSONObject o){if(busy||o.optBoolean("done"))return;try{o.put("done",true).put("completed",System.currentTimeMillis());cancel(o);if(!save())return;busy=true;LinearLayout f=column();f.setPadding(dp(24),dp(20),dp(24),dp(20));f.addView(text(o.optString("title"),24));TextView stamp=text("已驗票 · "+date(o.optLong("completed")),22);stamp.setTextColor(0xffa03832);stamp.setRotation(-10);stamp.setScaleX(2);stamp.setScaleY(2);stamp.setAlpha(0);f.addView(stamp);TextView tail=text("- - - - - - - - - - - - - -\n票尾 / "+o.optString("title"),18);f.addView(tail);AlertDialog d=new AlertDialog.Builder(this).setView(f).setPositiveButton("收好票尾",null).create();d.setOnDismissListener(v->{busy=false;render();});d.show();stamp.animate().alpha(1).scaleX(1).scaleY(1).setDuration(350).withEndAction(()->tail.animate().translationX(dp(100)).translationY(dp(30)).rotation(12).alpha(.2f).setDuration(650).start()).start();}catch(Exception e){busy=false;toast("驗票未能完成");}}
+  private void wallet(){LinearLayout f=column();for(JSONObject o:completed())if(date(o.optLong("completed")).equals(date(System.currentTimeMillis())))card(o,f);if(f.getChildCount()==0)f.addView(text("今日未有票尾。未行完嘅路，下次再行。",18));ScrollView sc=new ScrollView(this);sc.addView(f);new AlertDialog.Builder(this).setTitle("今日票夾").setView(sc).setPositiveButton("收好今日",null).show();}
+  private void menu(JSONObject o){new AlertDialog.Builder(this).setTitle(o.optString("title")).setItems(new String[]{"修改 / 留一句","開始呢一程","加相片（複製到 App）","提醒我","取消提醒","加入手機日曆","刪除車票"},(d,w)->{if(w==0)edit(o,false);if(w==1)new AlertDialog.Builder(this).setTitle(o.optString("title")).setMessage("慢慢行，唔需要倒數。").setPositiveButton("繼續旅程",null).show();if(w==2){photoId=o.optString("id");pick(8,Intent.ACTION_OPEN_DOCUMENT,"image/*");}if(w==3)remind(o);if(w==4){cancel(o);toast("已取消提醒");}if(w==5)try{startActivity(new Intent(Intent.ACTION_INSERT).setData(CalendarContract.Events.CONTENT_URI).putExtra(CalendarContract.Events.TITLE,o.optString("title")).putExtra(CalendarContract.Events.DESCRIPTION,o.optString("note")));}catch(Exception e){toast("未找到日曆 App");}if(w==6)new AlertDialog.Builder(this).setMessage("刪除車票？").setNegativeButton("取消",null).setPositiveButton("刪除",(a,b)->{cancel(o);for(int i=tasks.length()-1;i>=0;i--)if(tasks.optJSONObject(i)==o)tasks.remove(i);save();render();}).show();}).show();}
+  private Intent alarm(JSONObject o){return new Intent(this,ReminderReceiver.class).setData(Uri.parse("overlander://reminder/"+o.optString("id"))).putExtra("id",o.optString("id"));}
+  private void cancel(JSONObject o){PendingIntent p=PendingIntent.getBroadcast(this,0,alarm(o),PendingIntent.FLAG_NO_CREATE|PendingIntent.FLAG_IMMUTABLE);if(p!=null){((AlarmManager)getSystemService(ALARM_SERVICE)).cancel(p);p.cancel();}((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).cancel(o.optString("id").hashCode());}
+  private void remind(JSONObject o){if(o.optBoolean("done")){toast("已完成車票唔需要提醒");return;}if(Build.VERSION.SDK_INT>=33&&checkSelfPermission("android.permission.POST_NOTIFICATIONS")!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"},12);toast("授權後請重新選擇提醒");return;}new AlertDialog.Builder(this).setTitle("約略提醒（重啟後需重設）").setItems(new String[]{"15 分鐘後","1 小時後","明日呢個時間"},(d,w)->{try{PendingIntent p=PendingIntent.getBroadcast(this,0,alarm(o),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);((AlarmManager)getSystemService(ALARM_SERVICE)).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,System.currentTimeMillis()+new long[]{900000,3600000,86400000}[w],p);toast("已安排約略提醒");}catch(Exception e){toast("提醒未能安排");}}).show();}
+  private void calendar(){if(checkSelfPermission("android.permission.READ_CALENDAR")!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{"android.permission.READ_CALENDAR"},20);return;}io.execute(()->{ArrayList<String> labels=new ArrayList<>(),ids=new ArrayList<>();try(Cursor c=getContentResolver().query(CalendarContract.Calendars.CONTENT_URI,new String[]{"_id","calendar_displayName"},null,null,null)){if(c!=null)while(c.moveToNext()){ids.add(c.getString(0));labels.add(c.getString(1));}runOnUiThread(()->new AlertDialog.Builder(this).setTitle("選擇日曆（未來 30 日）").setItems(labels.toArray(new String[0]),(d,w)->events(ids.get(w))).setNegativeButton("取消",null).show());}catch(Exception e){runOnUiThread(()->toast("日曆未能讀取 / 權限被拒絕"));}});}
+  @Override public void onRequestPermissionsResult(int r,String[] p,int[] g){super.onRequestPermissionsResult(r,p,g);if(r==20){if(g.length>0&&g[0]==PackageManager.PERMISSION_GRANTED)calendar();else toast("未授權日曆，其他功能仍可使用");}}
+  private void events(String id){io.execute(()->{ArrayList<JSONObject> rows=new ArrayList<>();ArrayList<String> labels=new ArrayList<>();try{long now=System.currentTimeMillis();Uri.Builder u=CalendarContract.Instances.CONTENT_URI.buildUpon();ContentUris.appendId(u,now);ContentUris.appendId(u,now+30L*86400000);try(Cursor c=getContentResolver().query(u.build(),new String[]{"event_id","title","begin","end"},"calendar_id=?",new String[]{id},"begin ASC")){if(c!=null)while(c.moveToNext()){JSONObject o=new JSONObject().put("calendarKey",id+":"+c.getLong(0)+":"+c.getLong(2)).put("title",c.isNull(1)?"未命名行程":c.getString(1)).put("date",date(c.getLong(2))).put("start",new SimpleDateFormat("HH:mm",Locale.US).format(new Date(c.getLong(2)))).put("end",new SimpleDateFormat("HH:mm",Locale.US).format(new Date(c.getLong(3))));rows.add(o);labels.add(o.optString("date")+" "+o.optString("start")+" · "+o.optString("title"));}}runOnUiThread(()->{boolean[] chosen=new boolean[rows.size()];new AlertDialog.Builder(this).setTitle("選擇匯入（本機副本，非同步）").setMultiChoiceItems(labels.toArray(new String[0]),chosen,(d,w,b)->chosen[w]=b).setNegativeButton("取消",null).setPositiveButton("匯入",(d,w)->{try{int n=0;for(int i=0;i<rows.size();i++)if(chosen[i]){JSONObject o=rows.get(i);boolean duplicate=false;for(int j=0;j<tasks.length();j++)if(o.optString("calendarKey").equals(tasks.optJSONObject(j).optString("calendarKey")))duplicate=true;if(!duplicate){o.put("id",UUID.randomUUID().toString()).put("done",false).put("category","日曆");tasks.put(o);n++;}}if(save())toast("已匯入 "+n+" 項");render();}catch(Exception e){toast("匯入失敗");}}).show();});}catch(Exception e){runOnUiThread(()->toast("行程讀取失敗"));}});}
+  private void sounds(){body.addView(text("窗邊收音機 · 背景播放 / 鎖屏控制",21));body.addView(button("選擇音樂（複製到 App，最多 64 MB）",()->pick(9,Intent.ACTION_OPEN_DOCUMENT,"audio/*")));body.addView(button("播放 / 暫停音樂",()->media("toggle",null)));body.addView(button("停止播放",()->media("stop",null)));body.addView(button("播放原創合成火車聲",this::rail));for(String s:new String[]{"晨光","黃昏","夜行"})body.addView(button(s+"窗景",()->{scene=s;prefs.edit().putString("scene",s).apply();render();}));body.addView(text("音樂選擇會保留。相片 / 音樂卸載後會移除，請先備份。JSON 不包含音樂。",13));}
+  private void media(String action,String path){try{Intent i=new Intent(this,MusicPlaybackService.class).setAction(action);if(path!=null)i.putExtra("path",path);if(action.equals("stop")){stopService(i);return;}if(Build.VERSION.SDK_INT>=26)startForegroundService(i);else startService(i);}catch(Exception e){toast("背景播放未能啟動");}}
+  private void rail(){io.execute(()->{try{File f=new File(getFilesDir(),"rail.wav");if(!f.exists()){int rate=22050,n=rate*6;try(DataOutputStream out=new DataOutputStream(new FileOutputStream(f))){out.writeBytes("RIFF");le(out,36+n*2,4);out.writeBytes("WAVEfmt \av");}}}catch(Exception ignored){} });generateRail();}
+  private void generateRail(){io.execute(()->{try{File f=new File(getFilesDir(),"rail.wav");int rate=22050,n=rate*6;try(DataOutputStream out=new DataOutputStream(new FileOutputStream(f))){out.writeBytes("RIFF");le(out,36+n*2,4);out.writeBytes("WAVEfmt \u0020");le(out,16,4);le(out,1,2);le(out,1,2);le(out,rate,4);le(out,rate*2,4);le(out,2,2);le(out,16,2);out.writeBytes("data");le(out,n*2,4);Random random=new Random(41);for(int i=0;i<n;i++){double t=i/(double)rate,q=t%.75,env=Math.exp(-q*34)+(q>.16?.65*Math.exp(-(q-.16)*34):0);int value=(int)((.18*env*Math.sin(2*Math.PI*92*t)+.025*(random.nextDouble()*2-1))*20000);le(out,value,2);}}runOnUiThread(()->media("play",f.getAbsolutePath()));}catch(Exception e){runOnUiThread(()->toast("火車聲未能建立"));}});}
+  private void le(DataOutputStream o,int v,int n)throws IOException{for(int i=0;i<n;i++)o.writeByte(v>>>(8*i));}
+  private void pick(int code,String action,String type){try{Intent i=new Intent(action).setType(type).addCategory(Intent.CATEGORY_OPENABLE);if(code==31)i.putExtra(Intent.EXTRA_TITLE,"overlander-"+date(System.currentTimeMillis())+".json");startActivityForResult(i,code);}catch(Exception e){toast("未找到檔案選擇工具");}}
+  private byte[] read(Uri u,int max)throws Exception{try(InputStream in=getContentResolver().openInputStream(u);ByteArrayOutputStream out=new ByteArrayOutputStream()){if(in==null)throw new IOException();byte[] b=new byte[8192];int n;while((n=in.read(b))!=-1){if(out.size()+n>max)throw new IOException("檔案過大");out.write(b,0,n);}return out.toByteArray();}}
+  @Override protected void onActivityResult(int r,int result,Intent data){super.onActivityResult(r,result,data);if(result!=RESULT_OK||data==null||data.getData()==null)return;Uri u=data.getData();final String target=photoId;final String snapshot=tasks.toString();io.execute(()->{try{if(r==8||r==9){byte[] bytes=read(u,r==8?4*1024*1024:64*1024*1024);File dir=new File(getFilesDir(),r==8?"photos":"audio");if(!dir.exists()&&!dir.mkdirs())throw new IOException();File file=new File(dir,UUID.randomUUID().toString());try(FileOutputStream out=new FileOutputStream(file)){out.write(bytes);}runOnUiThread(()->{try{if(r==8){JSONObject o=find(target);if(o==null){file.delete();toast("車票已不存在");return;}o.put("photo",Uri.fromFile(file).toString());save();render();}else{prefs.edit().putString("musicPath",file.getAbsolutePath()).commit();media("play",file.getAbsolutePath());}}catch(Exception e){toast("檔案未能加入");}});}else if(r==31){JSONObject backup=new JSONObject().put("format","overlander").put("version",2);JSONArray list=new JSONArray(snapshot);for(int i=0;i<list.length();i++){JSONObject o=list.getJSONObject(i);String p=o.optString("photo");o.remove("photo");if(!p.isEmpty())o.put("photoBase64",android.util.Base64.encodeToString(read(Uri.parse(p),4*1024*1024),android.util.Base64.NO_WRAP));}backup.put("tasks",list);byte[] bytes=backup.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);if(bytes.length>32*1024*1024)throw new IOException("備份超過 32 MB");try(OutputStream out=getContentResolver().openOutputStream(u,"wt")){if(out==null)throw new IOException();out.write(bytes);}runOnUiThread(()->toast("JSON 備份已匯出（包含相片，不含音樂）"));}else if(r==32){JSONObject root=new JSONObject(new String(read(u,32*1024*1024),java.nio.charset.StandardCharsets.UTF_8));if(!"overlander".equals(root.optString("format"))||root.optInt("version")!=2)throw new IOException("不支援嘅備份格式");JSONArray list=root.getJSONArray("tasks");HashSet<String> ids=new HashSet<>();if(list.length()>10000)throw new IOException("紀錄過多");for(int i=0;i<list.length();i++){JSONObject o=list.getJSONObject(i);String id=o.getString("id");if(id.isEmpty()||!ids.add(id)||o.getString("title").trim().isEmpty()||!(o.get("done") instanceof Boolean))throw new IOException("車票資料格式錯誤");o.remove("photo");if(o.has("photoBase64")){byte[] image=android.util.Base64.decode(o.getString("photoBase64"),android.util.Base64.DEFAULT);if(image.length>4*1024*1024)throw new IOException("相片過大");o.remove("photoBase64");File dir=new File(getFilesDir(),"photos");dir.mkdirs();File f=new File(dir,UUID.randomUUID().toString());try(FileOutputStream out=new FileOutputStream(f)){out.write(image);}o.put("photo",Uri.fromFile(f).toString());}}runOnUiThread(()->new AlertDialog.Builder(this).setTitle("確認還原 "+list.length()+" 張車票？").setMessage("會取代現有車票；原資料另外保存在本機 recovery_tasks。現有提醒會取消。取消則不更改車票。").setNegativeButton("取消",null).setPositiveButton("取代並還原",(d,w)->{String old=prefs.getString("tasks","[]");if(prefs.edit().putString("recovery_tasks",old).putString("tasks",list.toString()).commit()){for(int i=0;i<tasks.length();i++)cancel(tasks.optJSONObject(i));tasks=list;healthy=true;render();toast("已還原");}else toast("還原儲存失敗");}).show());}}catch(Exception e){runOnUiThread(()->toast("操作未完成："+(e.getMessage()==null?"無法讀寫檔案":e.getMessage())));}});}
+  private class WindowView extends View {Paint p=new Paint(3);WindowView(){super(MainActivity.this);}protected void onDraw(Canvas c){float w=getWidth(),h=getHeight();boolean night=scene.equals("夜行");c.drawColor(night?0xff182b45:scene.equals("晨光")?0xffc3e0dc:0xffe9ba85);p.setColor(0xffffedb7);c.drawCircle(w*.8f,h*.25f,dp(15),p);float offset=(SystemClock.uptimeMillis()/35f)%dp(160);for(int i=-1;i<6;i++){float x=i*dp(160)-offset;Path hill=new Path();hill.moveTo(x,h);hill.lineTo(x+dp(80),h*.35f);hill.lineTo(x+dp(170),h);hill.close();p.setColor(night?0xff263d42:0xff64836b);c.drawPath(hill,p);}p.setColor(green);c.drawRect(0,h*.85f,w,h,p);p.setColor(cream);p.setTextSize(dp(13));c.drawText(scene+"慢車 / THE OVERLANDER",dp(12),h-dp(9),p);if(isShown()&&getWindowVisibility()==VISIBLE)postInvalidateDelayed(40);}}
+  private class MapView extends View {Paint p=new Paint(3);ArrayList<JSONObject> stops=completed();MapView(){super(MainActivity.this);Collections.reverse(stops);setContentDescription("旅程地圖；以下按鈕可回顧全部旅程");body.addView(button("以清單回顧站點（無障礙）",()->{String[] names=new String[stops.size()];for(int i=0;i<names.length;i++)names[i]=stops.get(i).optString("title");new AlertDialog.Builder(MainActivity.this).setItems(names,(d,w)->review(stops.get(w))).setNegativeButton("關閉",null).show();}));}protected void onDraw(Canvas c){int n=Math.min(stops.size(),20);p.setColor(green);p.setStrokeWidth(dp(3));for(int i=0;i<n;i++){float x=dp(28)+(i%4)*(getWidth()-dp(56))/3f,y=dp(26)+(i/4)*dp(47);if(i>0){int j=i-1;c.drawLine(dp(28)+(j%4)*(getWidth()-dp(56))/3f,dp(26)+(j/4)*dp(47),x,y,p);}c.drawCircle(x,y,dp(7),p);p.setTextSize(dp(11));c.drawText("站"+(i+1),x-dp(12),y+dp(20),p);}if(n==0){p.setTextSize(dp(16));c.drawText("第一站，等你慢慢出發。",dp(20),dp(80),p);}}public boolean onTouchEvent(android.view.MotionEvent e){if(e.getAction()==android.view.MotionEvent.ACTION_UP){for(int i=0;i<Math.min(stops.size(),20);i++){float x=dp(28)+(i%4)*(getWidth()-dp(56))/3f,y=dp(26)+(i/4)*dp(47);if(Math.hypot(e.getX()-x,e.getY()-y)<dp(24)){performClick();review(stops.get(i));break;}}return true;}return true;}public boolean performClick(){super.performClick();return true;}}
+  private void review(JSONObject o){new AlertDialog.Builder(this).setTitle(o.optString("title")).setMessage(date(o.optLong("completed"))+"\n"+o.optString("note")).setPositiveButton("收好回憶",null).show();}
+  @Override protected void onDestroy(){io.shutdown();super.onDestroy();}
 }
